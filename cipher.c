@@ -115,6 +115,8 @@ static const struct sshcipher ciphers[] = {
 #endif /* WITH_OPENSSL */
 	{ "chacha20-poly1305@openssh.com",
 			SSH_CIPHER_SSH2, 8, 64, 0, 16, 0, CFLAG_CHACHAPOLY, NULL },
+	{ "chacha20-poly1305@draft",
+			SSH_CIPHER_SSH2, 8, 32, 0, 16, 0, CFLAG_CHACHAPOLY, NULL },
 
 	{ NULL,		SSH_CIPHER_INVALID, 0, 0, 0, 0, 0, 0, NULL }
 };

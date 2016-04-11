@@ -26,6 +26,7 @@
 
 struct chachapoly_ctx {
 	struct chacha_ctx main_ctx, header_ctx;
+	u_int mode; /* 0: chacha20-poly1305@openssh.com, 1: chacha20-poly1305 */
 };
 
 int	chachapoly_init(struct chachapoly_ctx *cpctx,

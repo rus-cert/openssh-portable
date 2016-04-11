@@ -108,6 +108,7 @@
 /* the actual algorithms */
 
 #define KEX_SERVER_ENCRYPT \
+	"chacha20-poly1305@draft," \
 	"chacha20-poly1305@openssh.com," \
 	"aes128-ctr,aes192-ctr,aes256-ctr" \
 	AESGCM_CIPHER_MODES
@@ -137,6 +138,7 @@
 	"ssh-ed25519-cert-v01@openssh.com," \
 	"ssh-ed25519"
 #define	KEX_SERVER_ENCRYPT \
+	"chacha20-poly1305@draft," \
 	"chacha20-poly1305@openssh.com," \
 	"aes128-ctr,aes192-ctr,aes256-ctr"
 #define	KEX_SERVER_MAC \

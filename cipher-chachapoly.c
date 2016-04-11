@@ -31,10 +31,18 @@
 int chachapoly_init(struct chachapoly_ctx *ctx,
     const u_char *key, u_int keylen)
 {
-	if (keylen != (32 + 32)) /* 2 x 256 bit keys */
+	if (keylen == (32 + 32)) {
+		/* chacha20-poly1305@openssh.com: 2 x 256 bit keys */
+		ctx->mode = 0;
+		chacha_keysetup(&ctx->main_ctx, key, 256);
+		chacha_keysetup(&ctx->header_ctx, key + 32, 256);
+	} else if (keylen == 32) {
+		/* chacha20-poly1305: one 256 bit key */
+		ctx->mode = 1;
+		chacha_keysetup(&ctx->main_ctx, key, 256);
+	} else {
 		return SSH_ERR_INVALID_ARGUMENT;
-	chacha_keysetup(&ctx->main_ctx, key, 256);
-	chacha_keysetup(&ctx->header_ctx, key + 32, 256);
+	}
 	return 0;
 }
 
@@ -53,7 +61,7 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 {
 	u_char seqbuf[8];
 	const u_char one[8] = { 1, 0, 0, 0, 0, 0, 0, 0 }; /* NB little-endian */
-	u_char expected_tag[POLY1305_TAGLEN], poly_key[POLY1305_KEYLEN];
+	u_char expected_tag[POLY1305_TAGLEN], poly_key[POLY1305_KEYLEN + 4];
 	int r = SSH_ERR_INTERNAL_ERROR;
 
 	/*
@@ -70,7 +78,11 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 	if (!do_encrypt) {
 		const u_char *tag = src + aadlen + len;
 
-		poly1305_auth(expected_tag, src, aadlen + len, poly_key);
+		if (0 == ctx->mode) {
+			poly1305_auth(expected_tag, src, aadlen + len, poly_key);
+		} else {
+			poly1305_rfc7539_auth(expected_tag, src + aadlen, len, src, aadlen, poly_key);
+		}
 		if (timingsafe_bcmp(expected_tag, tag, POLY1305_TAGLEN) != 0) {
 			r = SSH_ERR_MAC_INVALID;
 			goto out;
@@ -78,9 +90,17 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 	}
 
 	/* Crypt additional data */
-	if (aadlen) {
+	if (4 != aadlen)
+		goto out;
+
+	if (0 == ctx->mode) {
 		chacha_ivsetup(&ctx->header_ctx, seqbuf, NULL);
 		chacha_encrypt_bytes(&ctx->header_ctx, src, dest, aadlen);
+	} else {
+		dest[0] = src[0] ^ poly_key[POLY1305_KEYLEN+0];
+		dest[1] = src[1] ^ poly_key[POLY1305_KEYLEN+1];
+		dest[2] = src[2] ^ poly_key[POLY1305_KEYLEN+2];
+		dest[3] = src[3] ^ poly_key[POLY1305_KEYLEN+3];
 	}
 
 	/* Set Chacha's block counter to 1 */
@@ -90,8 +110,13 @@ chachapoly_crypt(struct chachapoly_ctx *ctx, u_int seqnr, u_char *dest,
 
 	/* If encrypting, calculate and append tag */
 	if (do_encrypt) {
-		poly1305_auth(dest + aadlen + len, dest, aadlen + len,
-		    poly_key);
+		if (0 == ctx->mode) {
+			poly1305_auth(dest + aadlen + len, dest, aadlen + len,
+			    poly_key);
+		} else {
+			poly1305_rfc7539_auth(dest + aadlen + len,
+			    dest + aadlen, len, dest, aadlen, poly_key);
+		}
 	}
 	r = 0;
  out:
@@ -106,13 +131,26 @@ int
 chachapoly_get_length(struct chachapoly_ctx *ctx,
     u_int *plenp, u_int seqnr, const u_char *cp, u_int len)
 {
-	u_char buf[4], seqbuf[8];
+	u_char seqbuf[8];
 
 	if (len < 4)
 		return SSH_ERR_MESSAGE_INCOMPLETE;
 	POKE_U64(seqbuf, seqnr);
-	chacha_ivsetup(&ctx->header_ctx, seqbuf, NULL);
-	chacha_encrypt_bytes(&ctx->header_ctx, cp, buf, 4);
-	*plenp = PEEK_U32(buf);
+	if (0 == ctx->mode) {
+		u_char buf[4];
+
+		chacha_ivsetup(&ctx->header_ctx, seqbuf, NULL);
+		chacha_encrypt_bytes(&ctx->header_ctx, cp, buf, 4);
+		*plenp = PEEK_U32(buf);
+	} else {
+		u_char poly_key[POLY1305_KEYLEN + 4];
+
+		memset(poly_key, 0, POLY1305_KEYLEN);
+		memcpy(poly_key + POLY1305_KEYLEN, cp, 4);
+
+		chacha_ivsetup(&ctx->main_ctx, seqbuf, NULL);
+		chacha_encrypt_bytes(&ctx->main_ctx, poly_key, poly_key, sizeof(poly_key));
+		*plenp = PEEK_U32(poly_key + POLY1305_KEYLEN);
+	}
 	return 0;
 }

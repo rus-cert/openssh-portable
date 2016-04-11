@@ -480,11 +480,14 @@ blowfish-cbc
 .It
 cast128-cbc
 .It
+chacha20-poly1305
+.It
 chacha20-poly1305@openssh.com
 .El
 .Pp
 The default is:
 .Bd -literal -offset indent
+chacha20-poly1305,
 chacha20-poly1305@openssh.com,
 aes128-ctr,aes192-ctr,aes256-ctr,
 aes128-gcm@openssh.com,aes256-gcm@openssh.com,
