@@ -57,4 +57,4 @@ check 3072 `${SSH} -Q cipher | grep 128`
 check 3072 arcfour blowfish-cbc
 check 7680 `${SSH} -Q cipher | grep 192`
 check 8192 `${SSH} -Q cipher | grep 256`
-check 8192 rijndael-cbc@lysator.liu.se chacha20-poly1305@draft chacha20-poly1305@openssh.com
+check 8192 rijndael-cbc@lysator.liu.se chacha20-poly1305 chacha20-poly1305@openssh.com
