@@ -11,6 +11,7 @@
 #ifdef HAVE_STDINT_H
 # include <stdint.h>
 #endif
+#include <string.h>
 
 #include "poly1305.h"
 
@@ -30,19 +31,52 @@
 		(p)[3] = (uint8_t)((v) >> 24); \
 	} while (0)
 
+#define U64TO8_LE(p, v) \
+	do { \
+		(p)[0] = (uint8_t)((v)); \
+		(p)[1] = (uint8_t)((v) >>  8); \
+		(p)[2] = (uint8_t)((v) >> 16); \
+		(p)[3] = (uint8_t)((v) >> 24); \
+		(p)[4] = (uint8_t)((v) >> 32); \
+		(p)[5] = (uint8_t)((v) >> 40); \
+		(p)[6] = (uint8_t)((v) >> 48); \
+		(p)[7] = (uint8_t)((v) >> 56); \
+	} while (0)
+
 void
 poly1305_auth(unsigned char out[POLY1305_TAGLEN], const unsigned char *m, size_t inlen, const unsigned char key[POLY1305_KEYLEN]) {
+	struct poly1305_ctx ctx;
+	poly1305_setup(&ctx, key);
+	poly1305_update(&ctx, m, inlen, 1);
+	poly1305_finish(&ctx, out);
+	explicit_bzero(&ctx, sizeof(ctx));
+}
+
+void
+poly1305_rfc7539_auth(u_char out[POLY1305_TAGLEN], const u_char *m, size_t inlen, const u_char *aad, size_t aadlen, const u_char key[POLY1305_KEYLEN]) {
+	struct poly1305_ctx ctx;
+	u_char lengths[16];
+
+	U64TO8_LE(&lengths[0], (uint64_t) aadlen);
+	U64TO8_LE(&lengths[8], (uint64_t) inlen);
+
+	poly1305_setup(&ctx, key);
+
+	poly1305_update(&ctx, aad, aadlen, 0);
+	poly1305_update(&ctx, m, inlen, 0);
+	poly1305_update(&ctx, lengths, sizeof(lengths), 1);
+
+	poly1305_finish(&ctx, out);
+
+	explicit_bzero(&ctx, sizeof(ctx));
+	explicit_bzero(lengths, sizeof(lengths));
+}
+
+void
+poly1305_setup(struct poly1305_ctx *ctx, const unsigned char key[POLY1305_KEYLEN]) {
 	uint32_t t0,t1,t2,t3;
-	uint32_t h0,h1,h2,h3,h4;
-	uint32_t r0,r1,r2,r3,r4;
-	uint32_t s1,s2,s3,s4;
-	uint32_t b, nb;
-	size_t j;
-	uint64_t t[5];
-	uint64_t f0,f1,f2,f3;
-	uint32_t g0,g1,g2,g3,g4;
-	uint64_t c;
-	unsigned char mp[16];
+
+	memcpy(ctx->key, key, POLY1305_KEYLEN);
 
 	/* clamp key */
 	t0 = U8TO32_LE(key+0);
@@ -51,23 +85,39 @@ poly1305_auth(unsigned char out[POLY1305_TAGLEN], const unsigned char *m, size_t
 	t3 = U8TO32_LE(key+12);
 
 	/* precompute multipliers */
-	r0 = t0 & 0x3ffffff; t0 >>= 26; t0 |= t1 << 6;
-	r1 = t0 & 0x3ffff03; t1 >>= 20; t1 |= t2 << 12;
-	r2 = t1 & 0x3ffc0ff; t2 >>= 14; t2 |= t3 << 18;
-	r3 = t2 & 0x3f03fff; t3 >>= 8;
-	r4 = t3 & 0x00fffff;
+	ctx->r0 = t0 & 0x3ffffff; t0 >>= 26; t0 |= t1 << 6;
+	ctx->r1 = t0 & 0x3ffff03; t1 >>= 20; t1 |= t2 << 12;
+	ctx->r2 = t1 & 0x3ffc0ff; t2 >>= 14; t2 |= t3 << 18;
+	ctx->r3 = t2 & 0x3f03fff; t3 >>= 8;
+	ctx->r4 = t3 & 0x00fffff;
 
-	s1 = r1 * 5;
-	s2 = r2 * 5;
-	s3 = r3 * 5;
-	s4 = r4 * 5;
+	ctx->s1 = ctx->r1 * 5;
+	ctx->s2 = ctx->r2 * 5;
+	ctx->s3 = ctx->r3 * 5;
+	ctx->s4 = ctx->r4 * 5;
 
 	/* init state */
-	h0 = 0;
-	h1 = 0;
-	h2 = 0;
-	h3 = 0;
-	h4 = 0;
+	ctx->h0 = 0;
+	ctx->h1 = 0;
+	ctx->h2 = 0;
+	ctx->h3 = 0;
+	ctx->h4 = 0;
+}
+
+void
+poly1305_update(struct poly1305_ctx *ctx, const u_char *m, size_t inlen, int final) {
+	uint32_t t0,t1,t2,t3;
+	uint32_t h0,h1,h2,h3,h4;
+	const uint32_t r0 = ctx->r0, r1 = ctx->r1, r2 = ctx->r2, r3 = ctx->r3, r4 = ctx->r4;
+	const uint32_t               s1 = ctx->s1, s2 = ctx->s2, s3 = ctx->s3, s4 = ctx->s4;
+	uint32_t b;
+	size_t j;
+	uint64_t t[5];
+	uint64_t c;
+	unsigned char mp[16];
+
+	/* copy multipliers / state into local variables */
+	h0 = ctx->h0; h1 = ctx->h1; h2 = ctx->h2; h3 = ctx->h3; h4 = ctx->h4;
 
 	/* full blocks */
 	if (inlen < 16) goto poly1305_donna_atmost15bytes;
@@ -105,7 +155,22 @@ poly1305_donna_mul:
 
 	/* final bytes */
 poly1305_donna_atmost15bytes:
-	if (!inlen) goto poly1305_donna_finish;
+	if (!inlen) {
+		/* copy state back */
+		ctx->h0 = h0; ctx->h1 = h1; ctx->h2 = h2; ctx->h3 = h3; ctx->h4 = h4;
+		return;
+	}
+
+	if (!final) {
+		/* pad input with zero bytes */
+		for (j = 0; j < inlen; j++) mp[j] = m[j];
+		for (; j < 16; j++) mp[j] = 0;
+		m = mp;
+		inlen = 16;
+		goto poly1305_donna_16bytes;
+	}
+
+	/* final block is padded differently: first a "1" byte, then zeroes */
 
 	for (j = 0; j < inlen; j++) mp[j] = m[j];
 	mp[j++] = 1;
@@ -124,8 +189,18 @@ poly1305_donna_atmost15bytes:
 	h4 += (t3 >> 8);
 
 	goto poly1305_donna_mul;
+}
 
-poly1305_donna_finish:
+void
+poly1305_finish(struct poly1305_ctx *ctx, u_char out[POLY1305_TAGLEN]) {
+	uint32_t h0,h1,h2,h3,h4;
+	uint32_t g0,g1,g2,g3,g4;
+	uint64_t f0,f1,f2,f3;
+	uint32_t b, nb;
+
+	/* copy state into local variables */
+	h0 = ctx->h0; h1 = ctx->h1; h2 = ctx->h2; h3 = ctx->h3; h4 = ctx->h4;
+
 	             b = h0 >> 26; h0 = h0 & 0x3ffffff;
 	h1 +=     b; b = h1 >> 26; h1 = h1 & 0x3ffffff;
 	h2 +=     b; b = h2 >> 26; h2 = h2 & 0x3ffffff;
@@ -148,10 +223,10 @@ poly1305_donna_finish:
 	h3 = (h3 & nb) | (g3 & b);
 	h4 = (h4 & nb) | (g4 & b);
 
-	f0 = ((h0      ) | (h1 << 26)) + (uint64_t)U8TO32_LE(&key[16]);
-	f1 = ((h1 >>  6) | (h2 << 20)) + (uint64_t)U8TO32_LE(&key[20]);
-	f2 = ((h2 >> 12) | (h3 << 14)) + (uint64_t)U8TO32_LE(&key[24]);
-	f3 = ((h3 >> 18) | (h4 <<  8)) + (uint64_t)U8TO32_LE(&key[28]);
+	f0 = ((h0      ) | (h1 << 26)) + (uint64_t)U8TO32_LE(&ctx->key[16]);
+	f1 = ((h1 >>  6) | (h2 << 20)) + (uint64_t)U8TO32_LE(&ctx->key[20]);
+	f2 = ((h2 >> 12) | (h3 << 14)) + (uint64_t)U8TO32_LE(&ctx->key[24]);
+	f3 = ((h3 >> 18) | (h4 <<  8)) + (uint64_t)U8TO32_LE(&ctx->key[28]);
 
 	U32TO8_LE(&out[ 0], f0); f1 += (f0 >> 32);
 	U32TO8_LE(&out[ 4], f1); f2 += (f1 >> 32);
